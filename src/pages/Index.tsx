@@ -96,7 +96,7 @@ const Index = () => {
                   <p className="text-sm text-destructive">{error}</p>
                 )}
                 <Button type="submit" className="w-full" disabled={isLoading}>
-                  {isLoading ? "Analyzing..." : "Analyze Video"}
+                  {isLoading ? "🔍 Analyzing with AI..." : "🎬 Find Best Moments"}
                 </Button>
               </form>
             </CardContent>

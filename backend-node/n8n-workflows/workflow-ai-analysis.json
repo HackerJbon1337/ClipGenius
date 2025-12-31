@@ -1,0 +1,167 @@
+{
+    "name": "ClipGenius - AI Analysis",
+    "nodes": [
+        {
+            "parameters": {
+                "httpMethod": "POST",
+                "path": "analyze",
+                "responseMode": "responseNode",
+                "options": {}
+            },
+            "id": "webhook-trigger",
+            "name": "Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2,
+            "position": [
+                0,
+                0
+            ],
+            "webhookId": "analyze"
+        },
+        {
+            "parameters": {
+                "respondWith": "json",
+                "responseBody": "={{ JSON.stringify({ received: true, job_id: $json.body.job_id }) }}",
+                "options": {}
+            },
+            "id": "respond-immediately",
+            "name": "Respond Immediately",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [
+                220,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const webhookData = $('Webhook').item.json.body;\n\n// The backend sends transcript and duration\nlet transcript = webhookData.transcript || '';\nconst duration = webhookData.duration || 300;\n\n// Format duration\nconst durationMins = Math.floor(duration / 60);\nconst durationSecs = duration % 60;\nconst durationStr = `${durationMins}:${durationSecs.toString().padStart(2, '0')}`;\n\n// If no transcript, use fallback\nif (!transcript || transcript.length < 50) {\n  transcript = `Video ID ${webhookData.video_id} - suggest engaging timestamps spread across a ${durationStr} video.`;\n}\n\nreturn {\n  job_id: webhookData.job_id,\n  video_id: webhookData.video_id,\n  callback_url: webhookData.callback_url,\n  transcript: transcript,\n  duration: duration,\n  durationStr: durationStr\n};"
+            },
+            "id": "prepare-data",
+            "name": "Prepare Data",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                440,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "https://api.groq.com/openai/v1/chat/completions",
+                "authentication": "genericCredentialType",
+                "genericAuthType": "httpHeaderAuth",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"model\": \"llama-3.1-8b-instant\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You find the most engaging moments in YouTube videos for short-form clips. The video is {{ $json.durationStr }} ({{ $json.duration }} seconds). RULES: 1) ALL timestamps MUST be between 0 and {{ $json.duration }} seconds. 2) Find 4-5 highlights SPREAD ACROSS the ENTIRE video - include moments from beginning, middle AND end. 3) Use the [Xs] timestamps from the transcript. Return ONLY valid JSON: {\\\"highlights\\\": [{\\\"start_timestamp\\\": number, \\\"end_timestamp\\\": number, \\\"reason\\\": string}]}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Video: {{ $json.durationStr }} long ({{ $json.duration }}s). Find 4-5 engaging moments SPREAD across the ENTIRE video duration. Include at least one from first 20%, one from middle, one from last 30%. Max timestamp: {{ $json.duration }}. JSON only.\\n\\n{{ $json.transcript }}\"\n    }\n  ],\n  \"temperature\": 0.3,\n  \"max_tokens\": 800\n}",
+                "options": {}
+            },
+            "id": "ai-analysis",
+            "name": "AI Analysis (Groq)",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                660,
+                0
+            ],
+            "credentials": {
+                "httpHeaderAuth": {
+                    "id": "groq-api",
+                    "name": "Groq API Key"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "jsCode": "function uuid() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n  });\n}\n\nconst response = $input.first().json;\nconst prepData = $('Prepare Data').first().json;\nconst maxDuration = prepData.duration || 300;\n\nlet highlights = [];\n\ntry {\n  const content = response.choices[0].message.content;\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  \n  if (jsonMatch) {\n    const parsed = JSON.parse(jsonMatch[0]);\n    highlights = parsed.highlights || parsed;\n  }\n  \n  // Validate and cap timestamps\n  highlights = highlights.map(h => {\n    let start = parseInt(h.start_timestamp) || 30;\n    let end = parseInt(h.end_timestamp) || 60;\n    \n    // Ensure within video\n    if (start >= maxDuration) start = Math.max(0, maxDuration - 60);\n    if (end > maxDuration) end = maxDuration;\n    if (end <= start) end = Math.min(start + 30, maxDuration);\n    \n    return {\n      id: uuid(),\n      start_timestamp: start,\n      end_timestamp: end,\n      reason: String(h.reason || 'Engaging moment')\n    };\n  });\n  \n  // Ensure we have highlights spread across video\n  if (highlights.length > 0) {\n    const hasEarly = highlights.some(h => h.start_timestamp < maxDuration * 0.25);\n    const hasLate = highlights.some(h => h.start_timestamp > maxDuration * 0.6);\n    \n    // Add early highlight if missing\n    if (!hasEarly) {\n      highlights.unshift({\n        id: uuid(),\n        start_timestamp: Math.floor(maxDuration * 0.1),\n        end_timestamp: Math.floor(maxDuration * 0.1) + 30,\n        reason: 'Opening hook'\n      });\n    }\n    \n    // Add late highlight if missing\n    if (!hasLate && maxDuration > 120) {\n      highlights.push({\n        id: uuid(),\n        start_timestamp: Math.floor(maxDuration * 0.75),\n        end_timestamp: Math.min(Math.floor(maxDuration * 0.75) + 35, maxDuration),\n        reason: 'Key moment near end'\n      });\n    }\n  }\n} catch (e) {\n  // Fallback spread across video\n  highlights = [\n    { id: uuid(), start_timestamp: Math.floor(maxDuration * 0.05), end_timestamp: Math.floor(maxDuration * 0.05) + 30, reason: 'Opening hook' },\n    { id: uuid(), start_timestamp: Math.floor(maxDuration * 0.3), end_timestamp: Math.floor(maxDuration * 0.3) + 35, reason: 'Key moment' },\n    { id: uuid(), start_timestamp: Math.floor(maxDuration * 0.55), end_timestamp: Math.floor(maxDuration * 0.55) + 30, reason: 'Highlight' },\n    { id: uuid(), start_timestamp: Math.floor(maxDuration * 0.8), end_timestamp: Math.min(Math.floor(maxDuration * 0.8) + 35, maxDuration), reason: 'Strong ending' }\n  ];\n}\n\nif (!highlights.length) {\n  highlights = [{ id: uuid(), start_timestamp: 10, end_timestamp: Math.min(40, maxDuration), reason: 'Suggested clip' }];\n}\n\nreturn {\n  job_id: prepData.job_id,\n  video_id: prepData.video_id,\n  callback_url: prepData.callback_url,\n  highlights: highlights\n};"
+            },
+            "id": "parse-response",
+            "name": "Parse Response",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                880,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "={{ $json.callback_url }}",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"job_id\": \"{{ $json.job_id }}\",\n  \"video_id\": \"{{ $json.video_id }}\",\n  \"highlights\": {{ JSON.stringify($json.highlights) }}\n}",
+                "options": {}
+            },
+            "id": "callback",
+            "name": "Callback to Backend",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1100,
+                0
+            ]
+        }
+    ],
+    "connections": {
+        "Webhook": {
+            "main": [
+                [
+                    {
+                        "node": "Respond Immediately",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Respond Immediately": {
+            "main": [
+                [
+                    {
+                        "node": "Prepare Data",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Prepare Data": {
+            "main": [
+                [
+                    {
+                        "node": "AI Analysis (Groq)",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "AI Analysis (Groq)": {
+            "main": [
+                [
+                    {
+                        "node": "Parse Response",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Parse Response": {
+            "main": [
+                [
+                    {
+                        "node": "Callback to Backend",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    }
+}

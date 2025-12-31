@@ -11,11 +11,21 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AnalyzeResponse } from "@/services/api";
+import { Highlight, formatTime, downloadClip } from "@/services/api";
+
+// Updated interface for new API response
+interface ResultsData {
+  success: boolean;
+  video_id?: string;
+  highlights?: Highlight[];
+  cached?: boolean;
+}
 
 const Results = () => {
   const navigate = useNavigate();
-  const [results, setResults] = useState<AnalyzeResponse | null>(null);
+  const [results, setResults] = useState<ResultsData | null>(null);
+  const [downloadingClip, setDownloadingClip] = useState<string | null>(null);
+  const [clipError, setClipError] = useState<string | null>(null);
 
   useEffect(() => {
     const isLoggedIn = localStorage.getItem("isLoggedIn");
@@ -57,6 +67,29 @@ const Results = () => {
     }
   };
 
+  const handleDownloadClip = async (highlight: Highlight) => {
+    if (!results?.video_id) return;
+
+    setDownloadingClip(highlight.id);
+    setClipError(null);
+
+    try {
+      const downloadUrl = await downloadClip(
+        highlight.id,
+        results.video_id,
+        highlight.start_timestamp,
+        highlight.end_timestamp
+      );
+
+      // Open download URL in new tab
+      window.open(downloadUrl, "_blank");
+    } catch (error) {
+      setClipError(error instanceof Error ? error.message : "Failed to download clip");
+    } finally {
+      setDownloadingClip(null);
+    }
+  };
+
   if (!results) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -64,6 +97,8 @@ const Results = () => {
       </div>
     );
   }
+
+  const highlights = results.highlights || [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -82,7 +117,7 @@ const Results = () => {
             <div>
               <h2 className="text-2xl font-semibold">Analysis Results</h2>
               <p className="text-sm text-muted-foreground mt-1">
-                {results.video_title || `Video ID: ${results.video_id}`}
+                Video ID: {results.video_id}
               </p>
               {results.cached && (
                 <Badge variant="secondary" className="mt-2">
@@ -115,37 +150,81 @@ const Results = () => {
             </Card>
           )}
 
-          {/* Timestamps Table */}
+          {/* Error Message */}
+          {clipError && (
+            <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded-lg">
+              {clipError}
+            </div>
+          )}
+
+          {/* Highlights Table */}
           <Card>
             <CardHeader>
-              <CardTitle>Interesting Moments</CardTitle>
+              <CardTitle>🎬 Best Moments for Shorts</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Click on a timestamp to open the video at that moment
+                Click a timestamp to preview, or download the clip directly
               </p>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-32">Timestamp</TableHead>
-                    <TableHead>Why It's Interesting</TableHead>
+                    <TableHead className="w-40">Time Range</TableHead>
+                    <TableHead className="w-24">Duration</TableHead>
+                    <TableHead>Why It's Great</TableHead>
+                    <TableHead className="w-32 text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {results.timestamps.map((item, index) => (
-                    <TableRow
-                      key={index}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => openVideoAtTimestamp(item.seconds)}
-                    >
-                      <TableCell className="font-mono font-medium text-primary">
-                        {item.time}
-                      </TableCell>
-                      <TableCell>{item.reason}</TableCell>
-                    </TableRow>
-                  ))}
+                  {highlights.map((highlight) => {
+                    const duration = highlight.end_timestamp - highlight.start_timestamp;
+                    const isDownloading = downloadingClip === highlight.id;
+
+                    return (
+                      <TableRow key={highlight.id}>
+                        <TableCell
+                          className="font-mono font-medium text-primary cursor-pointer hover:underline"
+                          onClick={() => openVideoAtTimestamp(highlight.start_timestamp)}
+                        >
+                          {formatTime(highlight.start_timestamp)} - {formatTime(highlight.end_timestamp)}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {duration}s
+                        </TableCell>
+                        <TableCell>{highlight.reason}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={isDownloading}
+                            onClick={() => handleDownloadClip(highlight)}
+                          >
+                            {isDownloading ? "Processing..." : "📥 Download"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
+
+              {highlights.length === 0 && (
+                <p className="text-center text-muted-foreground py-8">
+                  No highlights found for this video.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Tips */}
+          <Card className="bg-muted/30">
+            <CardContent className="pt-6">
+              <h3 className="font-medium mb-2">💡 Tips</h3>
+              <ul className="text-sm text-muted-foreground space-y-1">
+                <li>• Clips are optimized for Instagram Reels & YouTube Shorts (15-60 seconds)</li>
+                <li>• Click on the time range to preview that moment in the video</li>
+                <li>• Downloaded clips are in MP4 format, ready to upload</li>
+              </ul>
             </CardContent>
           </Card>
         </div>
@@ -155,4 +234,3 @@ const Results = () => {
 };
 
 export default Results;
-

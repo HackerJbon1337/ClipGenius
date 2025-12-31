@@ -1,0 +1,249 @@
+{
+    "name": "ClipGenius - Video Clipping",
+    "nodes": [
+        {
+            "parameters": {
+                "httpMethod": "POST",
+                "path": "clip",
+                "responseMode": "responseNode",
+                "options": {}
+            },
+            "id": "webhook-trigger",
+            "name": "Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2,
+            "position": [
+                0,
+                0
+            ],
+            "webhookId": "clip"
+        },
+        {
+            "parameters": {
+                "respondWith": "json",
+                "responseBody": "={{ JSON.stringify({ received: true, clip_id: $json.body.clip_id }) }}",
+                "options": {}
+            },
+            "id": "respond-immediately",
+            "name": "Respond Immediately",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [
+                220,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "command": "=yt-dlp -f \"best[height<=720]/best\" --no-playlist -o \"{{ $('Webhook').item.json.body.clip_id }}_full.mp4\" \"https://www.youtube.com/watch?v={{ $('Webhook').item.json.body.video_id }}\""
+            },
+            "id": "download-video",
+            "name": "Download Video",
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
+            "position": [
+                440,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "command": "=ffmpeg -y -i \"{{ $('Webhook').item.json.body.clip_id }}_full.mp4\" -ss {{ $('Webhook').item.json.body.start_time }} -to {{ $('Webhook').item.json.body.end_time }} -c:v libx264 -c:a aac -movflags +faststart \"{{ $('Webhook').item.json.body.clip_id }}.mp4\""
+            },
+            "id": "cut-clip",
+            "name": "Cut Clip with FFmpeg",
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
+            "position": [
+                660,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "filePath": "={{ $('Webhook').item.json.body.clip_id }}.mp4"
+            },
+            "id": "read-clip-file",
+            "name": "Read Clip File",
+            "type": "n8n-nodes-base.readBinaryFiles",
+            "typeVersion": 1,
+            "position": [
+                880,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "={{ $('Webhook').item.json.body.supabase_url }}/storage/v1/object/clips/{{ $('Webhook').item.json.body.clip_id }}.mp4",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Authorization",
+                            "value": "=Bearer {{ $('Webhook').item.json.body.supabase_key }}"
+                        },
+                        {
+                            "name": "Content-Type",
+                            "value": "video/mp4"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "contentType": "binaryData",
+                "inputDataFieldName": "data",
+                "options": {}
+            },
+            "id": "upload-to-supabase",
+            "name": "Upload to Supabase",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1100,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const webhookData = $('Webhook').item.json.body;\n\n// Construct the public download URL\nconst downloadUrl = `${webhookData.supabase_url}/storage/v1/object/public/clips/${webhookData.clip_id}.mp4`;\n\nreturn {\n  clip_id: webhookData.clip_id,\n  callback_url: webhookData.callback_url,\n  download_url: downloadUrl\n};"
+            },
+            "id": "prepare-callback",
+            "name": "Prepare Callback",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1320,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "={{ $json.callback_url }}",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"clip_id\": \"{{ $json.clip_id }}\",\n  \"download_url\": \"{{ $json.download_url }}\"\n}",
+                "options": {}
+            },
+            "id": "callback-to-backend",
+            "name": "Callback to Backend",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1540,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "command": "=del \"{{ $('Webhook').item.json.body.clip_id }}_full.mp4\" \"{{ $('Webhook').item.json.body.clip_id }}.mp4\" 2>nul || rm -f \"{{ $('Webhook').item.json.body.clip_id }}_full.mp4\" \"{{ $('Webhook').item.json.body.clip_id }}.mp4\" 2>/dev/null || true"
+            },
+            "id": "cleanup-files",
+            "name": "Cleanup Files",
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
+            "position": [
+                1760,
+                0
+            ]
+        }
+    ],
+    "connections": {
+        "Webhook": {
+            "main": [
+                [
+                    {
+                        "node": "Respond Immediately",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Respond Immediately": {
+            "main": [
+                [
+                    {
+                        "node": "Download Video",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Download Video": {
+            "main": [
+                [
+                    {
+                        "node": "Cut Clip with FFmpeg",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Cut Clip with FFmpeg": {
+            "main": [
+                [
+                    {
+                        "node": "Read Clip File",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Read Clip File": {
+            "main": [
+                [
+                    {
+                        "node": "Upload to Supabase",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Upload to Supabase": {
+            "main": [
+                [
+                    {
+                        "node": "Prepare Callback",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Prepare Callback": {
+            "main": [
+                [
+                    {
+                        "node": "Callback to Backend",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Callback to Backend": {
+            "main": [
+                [
+                    {
+                        "node": "Cleanup Files",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [],
+    "triggerCount": 0,
+    "updatedAt": "2024-12-29T00:00:00.000Z",
+    "versionId": "1"
+}
